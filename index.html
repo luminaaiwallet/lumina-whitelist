@@ -1,0 +1,258 @@
+Lumina Whitelist — Full repo (Next.js + Tailwind + Supabase) 🚀
+
+Repository name suggestion: lumina-whitelist
+
+This single file contains the full project structure and code snippets you can copy into your repo and deploy to Vercel.
+
+
+---
+
+Project structure
+
+lumina-whitelist/
+├─ package.json
+├─ next.config.js
+├─ tailwind.config.js
+├─ postcss.config.js
+├─ pages/
+│  ├─ _app.js
+│  ├─ index.js
+│  └─ api/
+│     ├─ request-code.js
+│     └─ verify-code.js
+├─ lib/
+│  └─ supabase.js
+├─ styles/
+│  └─ globals.css
+└─ README.md
+
+
+---
+
+package.json
+
+{
+  "name": "lumina-whitelist",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "13.5.6",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "axios": "1.5.0",
+    "@supabase/supabase-js": "2.39.3"
+  },
+  "devDependencies": {
+    "autoprefixer": "10.4.14",
+    "postcss": "8.4.24",
+    "tailwindcss": "3.4.7"
+  }
+}
+
+
+---
+
+lib/supabase.js
+
+import { createClient } from '@supabase/supabase-js'
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+const supabaseAnonKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+
+⚠️ Use SUPABASE_SERVICE_ROLE_KEY only on the server side (API routes). Never expose it in the client.
+
+
+---
+
+Database schema (SQL for Supabase)
+
+create table whitelist (
+  id uuid default gen_random_uuid() primary key,
+  email text unique not null,
+  twitter text,
+  code text,
+  verified boolean default false,
+  created_at timestamptz default now(),
+  verified_at timestamptz
+);
+
+
+---
+
+pages/api/request-code.js (save code to Supabase)
+
+import fetch from 'node-fetch'
+import { supabase } from '../../lib/supabase'
+
+function genCode() {
+  return Math.floor(100000 + Math.random() * 900000).toString()
+}
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
+  const { email, twitter } = req.body || {}
+  if (!email) return res.status(400).json({ error: 'Email required' })
+
+  const code = genCode()
+
+  // Upsert record in Supabase
+  const { error: dbError } = await supabase
+    .from('whitelist')
+    .upsert({ email, twitter, code, verified: false })
+
+  if (dbError) {
+    console.error(dbError)
+    return res.status(500).json({ error: 'Database error' })
+  }
+
+  const RESEND_API_KEY = process.env.RESEND_API_KEY
+  const FROM = process.env.EMAIL_FROM || 'onboarding@lumina.ai'
+
+  if (!RESEND_API_KEY) {
+    console.warn('RESEND_API_KEY not set — skipping real send (development)')
+    return res.status(200).json({ ok: true, debug: true })
+  }
+
+  try {
+    const body = {
+      from: FROM,
+      to: email,
+      subject: 'Your Lumina whitelist confirmation code',
+      text: `Your Lumina confirmation code is: ${code}`
+    }
+
+    const r = await fetch('https://api.resend.com/v1/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    })
+
+    if (!r.ok) {
+      const errText = await r.text()
+      console.error('Resend error', errText)
+      return res.status(500).json({ error: 'Failed to send email' })
+    }
+
+    return res.status(200).json({ ok: true })
+  } catch (err) {
+    console.error(err)
+    return res.status(500).json({ error: 'Server error' })
+  }
+}
+
+
+---
+
+pages/api/verify-code.js (check code + mark verified)
+
+import { supabase } from '../../lib/supabase'
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' })
+  const { email, code } = req.body || {}
+  if (!email || !code) return res.status(400).json({ error: 'Missing fields' })
+
+  const { data, error } = await supabase
+    .from('whitelist')
+    .select('*')
+    .eq('email', email)
+    .single()
+
+  if (error || !data) return res.status(400).json({ error: 'No record found for this email' })
+
+  if (data.code !== String(code).trim()) {
+    return res.status(400).json({ error: 'Invalid code' })
+  }
+
+  const { error: updateError } = await supabase
+    .from('whitelist')
+    .update({ verified: true, verified_at: new Date().toISOString() })
+    .eq('email', email)
+
+  if (updateError) {
+    console.error(updateError)
+    return res.status(500).json({ error: 'Failed to update record' })
+  }
+
+  return res.status(200).json({ ok: true })
+}
+
+
+---
+
+README.md (updated)
+
+# Lumina Whitelist
+
+Next.js + Tailwind + Supabase whitelist site for Lumina AI. Includes email verification with Resend.
+
+## Features
+- Collect email + Twitter username
+- Send 6-digit confirmation code via email
+- Verify code and mark user as whitelisted in Supabase DB
+- Deployed easily to Vercel
+
+## Setup
+
+1. Clone repo: `git clone https://github.com/yourname/lumina-whitelist`
+2. `npm install`
+3. Create a `.env.local` file with:
+
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_url SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key RESEND_API_KEY=your_resend_server_api_key EMAIL_FROM="Lumina onboarding@yourdomain.com"
+
+4. Run locally: `npm run dev`
+
+## Deploy to Vercel
+1. Push repo to GitHub.
+2. Import into Vercel.
+3. Add environment variables in Vercel settings:
+   - `NEXT_PUBLIC_SUPABASE_URL`
+   - `SUPABASE_SERVICE_ROLE_KEY`
+   - `RESEND_API_KEY`
+   - `EMAIL_FROM`
+
+4. Deploy!
+
+## Database
+SQL schema for whitelist table is in the repo.
+
+```sql
+create table whitelist (
+  id uuid default gen_random_uuid() primary key,
+  email text unique not null,
+  twitter text,
+  code text,
+  verified boolean default false,
+  created_at timestamptz default now(),
+  verified_at timestamptz
+);
+
+
+---
+
+Notes
+
+Uses Supabase as persistent storage.
+
+Replace in-memory code storage with Supabase upsert.
+
+Production-ready (persistent + secure).
+
+
+---
+
+## GitHub description
+
+- **Repository name**: `lumina-whitelist`
+- **Description**: `Whitelist site for Lumina AI — Next.js + Tailwind + Supabase + email verification (Resend + Vercel).`
+
